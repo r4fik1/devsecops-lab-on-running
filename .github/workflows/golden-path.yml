@@ -173,7 +173,7 @@ jobs:
           DOJO_URL: ${{ secrets.DOJO_URL }}
           DOJO_API_KEY: ${{ secrets.DOJO_API_KEY }}
           # ⚠️ IMPORTANTE: Asegúrate de que este ID coincide con el de tu URL (ej: /engagement/2)
-          DOJO_ENGAGEMENT_ID: "2" 
+          DOJO_ENGAGEMENT_ID: "1" 
         run: |
           pip install requests
           python scripts/upload_dojo.py
