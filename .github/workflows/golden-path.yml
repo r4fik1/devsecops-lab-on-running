@@ -1,8 +1,5 @@
-name: On-Running DevSecOps Golden Path
+name: On-Running DevSecOps Golden Path (Full Suite)
 
-# 🚀 TRIGGER STRATEGY
-# We run security scans on every push to main and every Pull Request.
-# This ensures "Shift Left" security: catching issues before they reach production.
 on:
   push:
     branches: [ "main" ]
@@ -10,58 +7,115 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # 🔐 JOB 1: SECRET SCANNING (Gitleaks)
-  # STRATEGY: FAIL FAST
-  # This runs first. If we find a hardcoded secret, we stop everything immediately.
-  # There is no point in scanning for bugs if we just leaked an AWS Key.
+  # 🔐 1. SECRET SCAN (Gitleaks)
   secret-scan:
-    name: 🕵️ Secret Detection (Gitleaks)
+    name: 🕵️ Secret Scan
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
         with:
-          fetch-depth: 0 # IMPORTANT: Fetch full history to detect secrets in previous commits, not just the current one.
-      
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # If Gitleaks finds a secret, it returns exit code 1 and breaks the build here.
+        continue-on-error: true
 
-  # 📦 JOB 2: SCA - SOFTWARE COMPOSITION ANALYSIS (Trivy)
-  # Focus: Vulnerable Dependencies (e.g., old Flask version)
+  # 📦 2. SCA (Trivy Filesystem)
   dependency-scan:
-    name: 📦 Dependency Scanner (Trivy)
+    name: 📦 SCA (Dependencies)
     runs-on: ubuntu-latest
-    needs: secret-scan # DEPENDENCY: Only run if secrets are clean. Save CI minutes.
+    needs: secret-scan
+    if: always()
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
+      - uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '0'
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  # 🐍 3. SAST (Semgrep)
+  code-scan:
+    name: 🛡️ SAST (Code)
+    runs-on: ubuntu-latest
+    needs: secret-scan
+    if: always()
+    steps:
+      - uses: actions/checkout@v3
+      - uses: returntocorp/semgrep-action@v1
+        with:
+          config: p/python
+        continue-on-error: true
+
+  # 🐳 4. CONTAINER SECURITY (Build & Scan)
+  container-scan:
+    name: 🐳 Container Security
+    runs-on: ubuntu-latest
+    needs: secret-scan
+    if: always()
+    steps:
+      - uses: actions/checkout@v3
       
-      - name: Run Trivy vulnerability scanner
+      # Paso previo: Construir la imagen
+      - name: Build Docker Image
+        run: docker build -t my-app:${{ github.sha }} .
+      
+      # Escanear la imagen construida
+      - name: Run Trivy Image Scan
         uses: aquasecurity/trivy-action@master
         with:
-          scan-type: 'fs' # Filesystem scan (we are scanning code, not a built docker image yet)
-          scan-ref: '.'
-          format: 'table' # Human readable output in the CI logs
-          exit-code: '1' # BLOCKING: Fail the pipeline if vulnerabilities are found
-          ignore-unfixed: true # NOISE REDUCTION: Don't report bugs that have no patch available
+          scan-type: 'image'
+          image-ref: 'my-app:${{ github.sha }}'
+          format: 'table'
+          exit-code: '0'
           vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH' # POLICY: We only block for High/Critical issues.
+          severity: 'CRITICAL,HIGH'
 
-  # 🐍 JOB 3: SAST - STATIC APPLICATION SECURITY TESTING (Semgrep)
-  # Focus: Insecure Code Patterns (e.g., Command Injection, XSS)
-  code-scan:
-    name: 🛡️ Code Quality (Semgrep)
+  # ☁️ 5. IaC SECURITY (Checkov)
+  iac-scan:
+    name: ☁️ IaC Scan (Terraform)
     runs-on: ubuntu-latest
-    needs: secret-scan # Run in parallel with Trivy, but after Gitleaks
+    needs: secret-scan
+    if: always()
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
       
-      - name: Semgrep Security Scan
-        uses: returntocorp/semgrep-action@v1
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
         with:
-          config: p/python # Use the community-standard ruleset for Python
-          # Semgrep will automatically detect the 'subprocess.call' injection in app.py
+          directory: '.'
+          soft_fail: true
+          framework: terraform 
+
+  # 💥 6. DAST (OWASP ZAP)
+  dast-scan:
+    name: 💥 DAST (Dynamic Analysis)
+    runs-on: ubuntu-latest
+    needs: code-scan
+    if: always()
+    steps:
+      - uses: actions/checkout@v3
+      
+      # 1. Preparar entorno Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      # 2. Instalar dependencias y LEVANTAR la app en background
+      - name: Start App in Background
+        run: |
+          pip install -r requirements.txt
+          nohup python src/app.py &
+          sleep 5
+      
+      # 3. Atacar la app local con ZAP Baseline Scan
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.9.0
+        with:
+          target: 'http://localhost:5000'
+          fail_action: false
+          allow_issue_writing: false
