@@ -1,5 +1,7 @@
-name: On-Running DevSecOps Golden Path (Full Suite)
+name: On-Running DevSecOps Golden Path (Artifacts Edition)
 
+# 🚀 DISPARADORES (TRIGGERS)
+# Se ejecuta en cada push a la rama main y en cada Pull Request.
 on:
   push:
     branches: [ "main" ]
@@ -7,20 +9,39 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # 🔐 1. SECRET SCAN (Gitleaks)
+  # ====================================================
+  # 🔐 JOB 1: DETECCIÓN DE SECRETOS (Gitleaks)
+  # Busca contraseñas, API Keys o tokens hardcodeados.
+  # ====================================================
   secret-scan:
     name: 🕵️ Secret Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # Importante: Bajar todo el historial git
+      
+      # Ejecuta Gitleaks y genera un reporte JSON
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
+        with:
+          # --report-path guarda el resultado en un archivo
+          args: detect --report-path=gitleaks-report.json --redact --verbose
+        continue-on-error: true # AUDIT MODE: No rompe el pipeline si encuentra algo
 
-  # 📦 2. SCA (Trivy Filesystem)
+      # Sube el JSON como "Artefacto" para usarlo después
+      - name: Upload Gitleaks Report
+        uses: actions/upload-artifact@v3
+        if: always() # Se ejecuta aunque Gitleaks falle
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+
+  # ====================================================
+  # 📦 JOB 2: ANÁLISIS DE DEPENDENCIAS - SCA (Trivy)
+  # Busca librerías viejas o vulnerables en requirements.txt
+  # ====================================================
   dependency-scan:
     name: 📦 SCA (Dependencies)
     runs-on: ubuntu-latest
@@ -28,16 +49,28 @@ jobs:
     if: always()
     steps:
       - uses: actions/checkout@v3
+      
       - uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'fs'
           scan-ref: '.'
-          format: 'table'
-          exit-code: '0'
+          format: 'json'           # Queremos JSON para DefectDojo
+          output: 'trivy-report.json'
+          exit-code: '0'           # 0 = No romper el build (Audit Mode)
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-  # 🐍 3. SAST (Semgrep)
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: trivy-report
+          path: trivy-report.json
+
+  # ====================================================
+  # 🐍 JOB 3: ANÁLISIS DE CÓDIGO - SAST (Semgrep)
+  # Busca patrones de código inseguro (inyección SQL, RCE...)
+  # ====================================================
   code-scan:
     name: 🛡️ SAST (Code)
     runs-on: ubuntu-latest
@@ -45,12 +78,27 @@ jobs:
     if: always()
     steps:
       - uses: actions/checkout@v3
-      - uses: returntocorp/semgrep-action@v1
-        with:
-          config: p/python
+      
+      # Instalamos Semgrep manualmente para tener control total
+      - name: Install Semgrep
+        run: pip install semgrep
+
+      # Generamos el reporte JSON
+      - name: Run Semgrep
+        run: semgrep scan --config=p/python --json --output=semgrep-report.json
         continue-on-error: true
 
-  # 🐳 4. CONTAINER SECURITY (Build & Scan)
+      - name: Upload Semgrep Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: semgrep-report
+          path: semgrep-report.json
+
+  # ====================================================
+  # 🐳 JOB 4: SEGURIDAD DE CONTENEDORES
+  # Construye la imagen Docker y la escanea con Trivy
+  # ====================================================
   container-scan:
     name: 🐳 Container Security
     runs-on: ubuntu-latest
@@ -59,22 +107,33 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       
-      # Paso previo: Construir la imagen
+      # Paso 1: Construir la imagen localmente
       - name: Build Docker Image
         run: docker build -t my-app:${{ github.sha }} .
       
-      # Escanear la imagen construida
+      # Paso 2: Escanear esa imagen
       - name: Run Trivy Image Scan
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'image'
           image-ref: 'my-app:${{ github.sha }}'
-          format: 'table'
+          format: 'json'
+          output: 'trivy-image.json'
           exit-code: '0'
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-  # ☁️ 5. IaC SECURITY (Checkov)
+      - name: Upload Container Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: trivy-image-report
+          path: trivy-image.json
+
+  # ====================================================
+  # ☁️ JOB 5: INFRAESTRUCTURA COMO CÓDIGO (IaC)
+  # Revisa archivos Terraform buscando nubes inseguras
+  # ====================================================
   iac-scan:
     name: ☁️ IaC Scan (Terraform)
     runs-on: ubuntu-latest
@@ -88,34 +147,49 @@ jobs:
         with:
           directory: '.'
           soft_fail: true
-          framework: terraform 
+          framework: terraform
+          output_format: json
+          output_file_path: checkov-report.json
 
-  # 💥 6. DAST (OWASP ZAP)
-  dast-scan:
-    name: 💥 DAST (Dynamic Analysis)
+      - name: Upload Checkov Report
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: checkov-report
+          path: checkov-report.json
+
+  # ====================================================
+  # 📊 JOB 6: CENTRALIZACIÓN (DefectDojo)
+  # Descarga todos los reportes y los envía a tu servidor local
+  # ====================================================
+  defectdojo-upload:
+    name: 📊 Upload to DefectDojo
     runs-on: ubuntu-latest
-    needs: code-scan
+    # Espera a que terminen TODOS los escaneos anteriores
+    needs: [secret-scan, dependency-scan, code-scan, container-scan, iac-scan]
     if: always()
     steps:
       - uses: actions/checkout@v3
       
-      # 1. Preparar entorno Python
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      # 1. Descargar los JSONs generados por los otros jobs
+      # Se guardarán en carpetas: reports/trivy-report/trivy-report.json
+      - uses: actions/download-artifact@v3
         with:
-          python-version: '3.9'
-      
-      # 2. Instalar dependencias y LEVANTAR la app en background
-      - name: Start App in Background
+          path: reports
+
+      # 2. Aplanar carpetas (Mover todos los .json a la raíz)
+      # Esto facilita que el script de Python los encuentre
+      - name: Move Reports
         run: |
-          pip install -r requirements.txt
-          nohup python src/app.py &
-          sleep 5
-      
-      # 3. Atacar la app local con ZAP Baseline Scan
-      - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.9.0
-        with:
-          target: 'http://localhost:5000'
-          fail_action: false
-          allow_issue_writing: false
+          find reports -name "*.json" -exec mv {} . \;
+          ls -la *.json # Verificación visual en los logs
+
+      # 3. Ejecutar el script "Pegamento"
+      - name: Run Upload Script
+        env:
+          DOJO_URL: ${{ secrets.DOJO_URL }}
+          DOJO_API_KEY: ${{ secrets.DOJO_API_KEY }}
+          DOJO_ENGAGEMENT_ID: "1"
+        run: |
+          pip install requests
+          python scripts/upload_dojo.py
