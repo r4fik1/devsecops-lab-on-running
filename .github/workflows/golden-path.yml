@@ -15,7 +15,7 @@ jobs:
     name: 🕵️ Secret Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4 # Actualizado a v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -26,7 +26,6 @@ jobs:
           args: detect --report-path=gitleaks-report.json --redact --verbose
         continue-on-error: true
 
-      # CORRECCIÓN: Usamos v4
       - name: Upload Gitleaks Report
         uses: actions/upload-artifact@v4
         if: always()
@@ -43,7 +42,7 @@ jobs:
     needs: secret-scan
     if: always()
     steps:
-      - uses: actions/checkout@v4 # Actualizado a v4
+      - uses: actions/checkout@v4
       
       - uses: aquasecurity/trivy-action@master
         with:
@@ -55,7 +54,6 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-      # CORRECCIÓN: Usamos v4
       - name: Upload Trivy Report
         uses: actions/upload-artifact@v4
         if: always()
@@ -72,7 +70,7 @@ jobs:
     needs: secret-scan
     if: always()
     steps:
-      - uses: actions/checkout@v4 # Actualizado a v4
+      - uses: actions/checkout@v4
       
       - name: Install Semgrep
         run: pip install semgrep
@@ -81,7 +79,6 @@ jobs:
         run: semgrep scan --config=p/python --json --output=semgrep-report.json
         continue-on-error: true
 
-      # CORRECCIÓN: Usamos v4
       - name: Upload Semgrep Report
         uses: actions/upload-artifact@v4
         if: always()
@@ -98,7 +95,7 @@ jobs:
     needs: secret-scan
     if: always()
     steps:
-      - uses: actions/checkout@v4 # Actualizado a v4
+      - uses: actions/checkout@v4
       
       - name: Build Docker Image
         run: docker build -t my-app:${{ github.sha }} .
@@ -114,7 +111,6 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
-      # CORRECCIÓN: Usamos v4
       - name: Upload Container Report
         uses: actions/upload-artifact@v4
         if: always()
@@ -131,7 +127,7 @@ jobs:
     needs: secret-scan
     if: always()
     steps:
-      - uses: actions/checkout@v4 # Actualizado a v4
+      - uses: actions/checkout@v4
       
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
@@ -142,7 +138,6 @@ jobs:
           output_format: json
           output_file_path: checkov-report.json
 
-      # CORRECCIÓN: Usamos v4
       - name: Upload Checkov Report
         uses: actions/upload-artifact@v4
         if: always()
@@ -161,23 +156,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
-      # CORRECCIÓN: Usamos v4 para descargar
+      # Descarga v4 (crea subcarpetas por cada artefacto)
       - uses: actions/download-artifact@v4
         with:
           path: reports
-          # En v4, por defecto crea carpetas por cada artefacto, 
-          # pero nuestro script 'Move Reports' de abajo ya lo gestiona.
 
+      # Aplanar carpetas: Saca los JSON de las subcarpetas a la raíz
       - name: Move Reports
         run: |
-          find reports -name "*.json" -exec mv {} . \;
+          find reports -mindepth 2 -name "*.json" -exec mv {} . \;
+          echo "--- Reportes listos para subir: ---"
           ls -la *.json
 
       - name: Run Upload Script
         env:
           DOJO_URL: ${{ secrets.DOJO_URL }}
           DOJO_API_KEY: ${{ secrets.DOJO_API_KEY }}
-          DOJO_ENGAGEMENT_ID: "1"
+          # ⚠️ IMPORTANTE: Asegúrate de que este ID coincide con el de tu URL (ej: /engagement/2)
+          DOJO_ENGAGEMENT_ID: "2" 
         run: |
           pip install requests
           python scripts/upload_dojo.py
